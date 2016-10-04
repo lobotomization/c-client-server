@@ -1,8 +1,5 @@
-<<<<<<< HEAD
- #include <stdio.h>
-=======
+//#include <test.h>
 #include <stdio.h>
->>>>>>> 4fb3016c377d7cd16dcfe309cd71dd0c50da6ce2
 #include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
@@ -47,10 +44,7 @@ void printMetadata(int fd, struct prog_stats *metadata);
 int main(int argc, char **argv){
 
 	const int NUMCHLD = 10;
-<<<<<<< HEAD
 	int PIDS[NUMCHLD] = {0}, pid = 0, index = 0
-=======
->>>>>>> 4fb3016c377d7cd16dcfe309cd71dd0c50da6ce2
 	int shmfd;
 	void *shm;
 	/*void reaper(int signal){
@@ -66,7 +60,6 @@ int main(int argc, char **argv){
 
 	spawnChildren(NUMCHLD);
 	while(1){
-<<<<<<< HEAD
 		pid = wait(NULL);
 		
 		for(index = 0; i < NUMCHLD && PIDS[index] != pid; index++);
@@ -75,9 +68,6 @@ int main(int argc, char **argv){
 				exit RETURN_FAILURE;
 			}
 
-=======
-		wait(NULL);
->>>>>>> 4fb3016c377d7cd16dcfe309cd71dd0c50da6ce2
 
 		shmfd = shm_open("metadata", O_RDWR|O_CREAT, 0666);
 		ftruncate(shmfd, sizeof(struct prog_stats)); 
@@ -98,11 +88,7 @@ int main(int argc, char **argv){
 
 
 int spawnChildren(int NUMCHLD){
-<<<<<<< HEAD
 	int children = 0;
-=======
-	int children = 0, pid = 0;
->>>>>>> 4fb3016c377d7cd16dcfe309cd71dd0c50da6ce2
 
 	while(children < NUMCHLD)
 	{
@@ -110,10 +96,7 @@ int spawnChildren(int NUMCHLD){
 		pid = fork();
 		if(0 == pid)
 		{
-<<<<<<< HEAD
 			for(index = 0; i < NUMCHLD && PIDS[index] != 0; index++);
-=======
->>>>>>> 4fb3016c377d7cd16dcfe309cd71dd0c50da6ce2
 			return spawnChild();
 		}
 		else if(0 > pid){
