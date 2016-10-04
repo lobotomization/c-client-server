@@ -1,5 +1,3 @@
-//#include <test.h>
-//#include <test2.h>
 #include <stdio.h>
 #include <unistd.h>
 #include <stdlib.h>
