@@ -44,9 +44,9 @@ void printMetadata(int fd, struct prog_stats *metadata);
 int main(int argc, char **argv){
 
 	const int NUMCHLD = 10;
-	int PIDS[NUMCHLD] = {0}, pid = 0, index = 0
-	int shmfd;
-	void *shm;
+	int pid = 0, index = 0, PIDS[NUMCHLD + 1] = {0}; //Slot 0 reserved for LOCK
+	int shmfd, PIDshmfd;
+	void *shm, *PIDTable;
 	/*void reaper(int signal){
 		wait(NULL);
 		children--;
@@ -57,7 +57,10 @@ int main(int argc, char **argv){
 		return EXIT_FAILURE;
 	}*/
 	struct prog_stats *childstatus = NULL;
-
+	PIDshmfd = shm_open("PIDTable", O_RDWR|O_CREAT, 0666);
+	ftruncate(shmfd, sizeof(PIDS)*(NUMCHLD + 1));
+	PIDTable = mmap(0, sizeof(PIDS)*(NUMCHLD + 1), PROT_READ | PROT_WRITE, MAP_SHARED, PIDshmfd, 0);
+	
 	spawnChildren(NUMCHLD);
 	while(1){
 		pid = wait(NULL);
