@@ -15,6 +15,7 @@
 #include <fcntl.h>     
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#define NUMCHLD 10
 struct sockaddr_in getSockaddrFromPort(int port);
 struct prog_stats{
 	int size;
@@ -32,7 +33,7 @@ struct prog_stats{
 	time_t deleted;
 };
 
-int spawnChildren(int NUMCHLD);
+int spawnChildren(int num);
 int spawnChild();
 void handleConnection(int connection, int port);
 int listenOnPort(int INITPORT, int *listener);
@@ -43,10 +44,10 @@ int writeLongToString(char *str, long l, int offset);
 void printMetadata(int fd, struct prog_stats *metadata);
 int main(int argc, char **argv){
 
-	const int NUMCHLD = 10;
-	int pid = 0, index = 0, PIDS[NUMCHLD + 1] = {0}; //Slot 0 reserved for LOCK
+	//const int NUMCHLD = 10;
+	int pid = 0, index = 0, *PIDTable; //Slot 0 reserved for LOCK
 	int shmfd, PIDshmfd;
-	void *shm, *PIDTable;
+	void *shm;
 	/*void reaper(int signal){
 		wait(NULL);
 		children--;
@@ -57,27 +58,39 @@ int main(int argc, char **argv){
 		return EXIT_FAILURE;
 	}*/
 	struct prog_stats *childstatus = NULL;
+
 	PIDshmfd = shm_open("PIDTable", O_RDWR|O_CREAT, 0666);
-	ftruncate(shmfd, sizeof(PIDS)*(NUMCHLD + 1));
-	PIDTable = mmap(0, sizeof(PIDS)*(NUMCHLD + 1), PROT_READ | PROT_WRITE, MAP_SHARED, PIDshmfd, 0);
-	
+	ftruncate(PIDshmfd, sizeof(int)*(NUMCHLD + 1));
+	PIDTable = (int *)mmap(0, sizeof(int)*(NUMCHLD + 1), PROT_READ | PROT_WRITE, MAP_SHARED, PIDshmfd, 0);
+	memset(PIDTable, 0, sizeof(int)*(NUMCHLD + 1));
+
+
 	spawnChildren(NUMCHLD);
 	while(1){
-		pid = wait(NULL);
-		
-		for(index = 0; i < NUMCHLD && PIDS[index] != pid; index++);
-			if(index == NUMCHLD){
-				printf("No index found for child!\n");
-				exit RETURN_FAILURE;
-			}
-
+		if(-1 == (pid = wait(NULL))){
+			perror("Child exited crappily");
+		}
+		printf("Child exited with PID: %d\n", (int)pid);
+		for(index = 1; index <=NUMCHLD; index++){
+			printf("PID[%d] = %d\n", index, *(PIDTable + index));
+		}
+		while(*PIDTable == 1){
+			sleep(1);
+		}
+		if(*PIDTable == 0)
+		*PIDTable = 1;
+		for(index = 1; *(PIDTable + index) != (int)pid && index <=NUMCHLD; index++); //Calculate index
+		printf("Deleting index %d\n", index); 
+		*(PIDTable + index) = 0;
+		*PIDTable = 0;
+		printf("Lock status: %d\n", *PIDTable);
 
 		shmfd = shm_open("metadata", O_RDWR|O_CREAT, 0666);
 		ftruncate(shmfd, sizeof(struct prog_stats)); 
 		shm = mmap(0,sizeof(struct prog_stats), PROT_READ | PROT_WRITE, MAP_SHARED, shmfd, 0);
 		childstatus = (struct prog_stats *)shm;
 
-		printMetadata(1, childstatus);
+		//printMetadata(1, childstatus);
 
 		munmap(shm, sizeof(struct prog_stats));
 		shm_unlink("metadata");
@@ -90,16 +103,28 @@ int main(int argc, char **argv){
 
 
 
-int spawnChildren(int NUMCHLD){
-	int children = 0;
+int spawnChildren(int num){
+	int children = 0, pid = 0;
 
-	while(children < NUMCHLD)
+	while(children < num)
 	{
 		printf("Parent forking a child process...\n");			
 		pid = fork();
 		if(0 == pid)
 		{
-			for(index = 0; i < NUMCHLD && PIDS[index] != 0; index++);
+			int PIDshmfd = shm_open("PIDTable", O_RDWR|O_CREAT, 0666), index = 0;
+			ftruncate(PIDshmfd, sizeof(int)*(NUMCHLD + 1));
+			int *PIDTable = (int *)mmap(0, sizeof(int)*(NUMCHLD + 1), PROT_READ | PROT_WRITE, MAP_SHARED, PIDshmfd, 0);
+			while(*PIDTable == 1){   //Be super careful about this, race conditions might happen here or in the next block!
+				sleep(1);
+			}
+			if(*PIDTable == 0){				///This is where proper locking needs to happen, race conditions can still happen here :(
+				*PIDTable = 1;
+				for(index = 1; *(PIDTable + index) != 0 && index <=NUMCHLD; index++); //Calculate index
+				printf("Now adding PID %d to index %d\n", (int)getpid(), index);
+				*(PIDTable + index) = (int)getpid();
+				*PIDTable = 0;
+				}
 			return spawnChild();
 		}
 		else if(0 > pid){
@@ -141,6 +166,9 @@ int spawnChild(){
 }
 
 void handleConnection(int connection, int port){
+
+
+
 	//long curTime = (long)time(NULL);
 	fcntl(connection, F_SETFD, FD_CLOEXEC);
 	struct prog_stats *metadata = (struct prog_stats *)malloc(sizeof(struct prog_stats));
