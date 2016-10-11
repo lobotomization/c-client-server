@@ -55,6 +55,7 @@ struct prog_stats{
 	time_t replytime;
 	time_t deleted;
 };
+char *statusPrinter(int status);
 void status(int signal);
 struct sockaddr_in getSockaddrFromPort(int port); 
 void compileCode(char *sourcename, char *execname, int connection);
@@ -84,11 +85,8 @@ int main(int argc, char **argv){
 		return EXIT_FAILURE;
 	}*/
 	int statusshmfd;												//initialize the statuses to zero
-	char **statuses;
-	initsharedmem("status", statusshmfd, char*, statuses, sizeof(char *)*NUMCHLD);
-	for(int i = 0; i < NUMCHLD; i++){
-		*(statuses + i) = (char *)malloc(100);
-	}
+	int *statuses;
+	initsharedmem("status", statusshmfd, int, statuses, sizeof(int)*NUMCHLD);
 
 
 	if(SIG_ERR == signal(SIGUSR1, status))
@@ -147,8 +145,51 @@ int main(int argc, char **argv){
 
 }
 
+void status(int signal){
+	int statusshmfd;
+	int *statuses;
+	opensharedmem("status", statusshmfd, int, statuses, sizeof(int)*NUMCHLD);
+	int *PIDTable;
+	int PIDshmfd;
+	opensharedmem("PIDTable", PIDshmfd, int, PIDTable, NUMCHLD);
+	printf("Index number\tPID\tStatus\n");
+	for(int i = 0; i < NUMCHLD; i++){
+		printf("%d\t\t%d\t%s\n", i, *(PIDTable + i), statusPrinter(*(statuses+i)));
+		//printf("*(statuses + %d) = %p\n", i, *(statuses + i));
+		//printf("*(statuses + %d) points to the string %s\n", i, *(statuses + i));
+	}
 
-
+}
+char *statusPrinter(int status){
+	switch(status){
+		case 0:
+		return "Unstarted";
+		case 1:
+		return "Initializing";
+		case 2:
+		return "Listening";
+		case 3:
+		return "Connecting";
+		case 4:
+		return "Connected";
+		case 5:
+		return "Connected and reading";
+		case 6:
+		return "Connected and writing code";
+		case 7:
+		return "Connected and stopping coding";
+		case 8:
+		return "Connected and compiling code";
+		case 9:
+		return "Connected and executing code";
+		case 10:
+		return "Connected and writing metadata";
+		case 11:
+		return "Stopping";
+		default:
+		return "Unknown state";
+	}
+}
 int spawnChildren(int num){
 	int children = 0, pid = 0;
 
@@ -171,8 +212,8 @@ int spawnChildren(int num){
 			f_lock.l_len = sizeof(int)*(NUMCHLD + 1);
 
 			int statusshmfd;
-			char **statuses;
-			opensharedmem("status", statusshmfd, char*, statuses, sizeof(char *)*NUMCHLD);
+			int *statuses;
+			opensharedmem("status", statusshmfd, int, statuses, sizeof(int)*NUMCHLD);
 
 			int *PIDTable;
 			int PIDshmfd , index;
@@ -184,10 +225,7 @@ int spawnChildren(int num){
 			*(PIDTable + index) = (int)getpid();
 			f_lock.l_type = F_UNLCK;
 			fcntl(PIDshmfd, F_SETLK, &f_lock);
-			*(statuses + index) = (char *)malloc(100);
-			strcpy(*(statuses + index), "Initializing"); //Why the crap is this not accessible from the signal handler?
-			printf("*(statuses + %d) = %p\n", index, *(statuses + index));
-			printf("*(statuses + %d) points to the string %s\n", index, *(statuses + index));
+			*(statuses + index) = 1; //Status 1: Initializing
 
 			spawnChild();
 			return (int)getpid();
@@ -206,8 +244,8 @@ int spawnChild(){
 	int listener, connection, port;
 
 	int statusshmfd;
-	char **statuses;
-	opensharedmem("status", statusshmfd, char*, statuses, sizeof(char *)*NUMCHLD);
+	int *statuses;
+	opensharedmem("status", statusshmfd, int, statuses, sizeof(int)*NUMCHLD);
 
 	int *PIDTable;
 	int PIDshmfd , index;
@@ -221,10 +259,10 @@ int spawnChild(){
 		return EXIT_FAILURE;	
 	}
 	
-	//strcpy(*(statuses + index), "Listening\0"); 
+	*(statuses + index) = 2; // Status 2: Listening 
 	connection = accept(listener, NULL, NULL);
 	printf("Child process connection now beginning...\n");
-	//strcpy(*(statuses + index), "Connecting\0"); 
+	*(statuses + index) = 3; // Status 3: Connecting
 	if(0 > connection)
 	{
 		perror("Accepting connection failed, child exiting...");
@@ -243,22 +281,7 @@ int spawnChild(){
 	close(listener);
 	return EXIT_SUCCESS;
 }
-	void status(int signal){
-		int statusshmfd;
-		char **statuses;
-		opensharedmem("status", statusshmfd, char*, statuses, sizeof(char *)*NUMCHLD);
 
-		int *PIDTable;
-		int PIDshmfd;
-		opensharedmem("PIDTable", PIDshmfd, int, PIDTable, NUMCHLD);
-		printf("Index number\tPID\tStatus\n");
-		for(int i = 0; i < NUMCHLD; i++){
-			printf("%d\t\t%d\t%s\n", i, *(PIDTable + i), *(statuses+i));
-			//printf("*(statuses + %d) = %p\n", i, *(statuses + i));
-			//printf("*(statuses + %d) points to the string %s\n", i, *(statuses + i));
-		}
-
-	}
 void handleConnection(int connection, int port){
 
 
@@ -266,14 +289,14 @@ void handleConnection(int connection, int port){
 	//long curTime = (long)time(NULL);
 	//fcntl(connection, F_SETFD, FD_CLOEXEC);
 	int statusshmfd;
-	char **statuses;
-	opensharedmem("status", statusshmfd, char*, statuses, sizeof(char *)*NUMCHLD);
+	int *statuses;
+	opensharedmem("status", statusshmfd, int, statuses, sizeof(int)*NUMCHLD);
 
 	int *PIDTable;
 	int PIDshmfd , index;
 	opensharedmem("PIDTable", PIDshmfd, int, PIDTable, NUMCHLD);
 	for(index = 0; *(PIDTable + index) != getpid() && index < NUMCHLD; index++);
-	//strcpy(*(statuses + index), "Connected"); 
+	*(statuses + index) = 4; // Status 4: Connected
 
 	struct prog_stats *metadata = (struct prog_stats *)malloc(sizeof(struct prog_stats));
 	memset(metadata, 0, sizeof(struct prog_stats)); //Zero out the struct, in case the user exits immediately
@@ -286,6 +309,7 @@ void handleConnection(int connection, int port){
 	const char welcome[] = "Welcome to Ian's C auto-compiling server security nightmare!\nType \"%s\" to begin coding and \"%s\" to submit your code and \"%s\" to stop\n";
 	
 	dprintf(connection, welcome, start, end, stop);
+	*(statuses + index) = 5; // Status 5: Connected and reading
 	bytesRead = read(connection, text, 1024);
 	while(-1 != bytesRead)
 	{
@@ -293,6 +317,7 @@ void handleConnection(int connection, int port){
 		
 
 		if(0 == strncmp(text, stop, 4)){
+			*(statuses + index) = 11; // Status 11: Stopping
 			if(1 == writingCode){
 				fclose(outFile);
 			}
@@ -304,6 +329,7 @@ void handleConnection(int connection, int port){
 		}
 
 		if(1 == writingCode && 0 == strncmp(text, end, 3)){
+			*(statuses + index) = 7; // Status 7: Connected and stopping coding
 			writingCode = 0;
 			fclose(outFile);
 			metadata->written = time(NULL);
@@ -313,7 +339,7 @@ void handleConnection(int connection, int port){
 			metadata->size = size;
 			metadata->sourcename = sourcename;
 			metadata->execname = execname;	
-
+			*(statuses + index) = 8; // Status 8: Connected and compiling code
 			compileCode(sourcename, execname, connection);
 
 			wait(&returnCode);
@@ -322,6 +348,7 @@ void handleConnection(int connection, int port){
 			dprintf(connection, "Your return code is: %d\n", returnCode);	
 			metadata->started = time(NULL);
 			if(returnCode == 0){
+				*(statuses + index) = 9; // Status 9: Connected and executing code
 				executeCode(execname, connection);
 
 			}
@@ -354,7 +381,7 @@ void handleConnection(int connection, int port){
 			struct prog_stats *shmprogstats;
 			opensharedmem("metadata", shmfd, struct prog_stats, shmprogstats, 1);
 			fcntl(shmfd, F_SETLKW, &meta_lock);
-
+			*(statuses + index) = 10; // Status 10: Connected and writing metadata
 			/*
 			int shmfd = shm_open("metadata", O_RDWR|O_CREAT, 0666);
 			ftruncate(shmfd, sizeof(struct prog_stats)); //I should figure out a better bound than just 4KB for no good reason
@@ -376,7 +403,7 @@ void handleConnection(int connection, int port){
 			//munmap(shm, sizeof(struct prog_stats));
 			//shm_unlink("metadata");
 			close(shmfd);
-			
+			*(statuses + index) = 5; // Status 5: Connected and reading
 			//printMetadata(connection, metadata);
 		}
 
@@ -390,7 +417,9 @@ void handleConnection(int connection, int port){
 				write(connection, "Now writing code to file\n", sizeof("Now writing code to file\n"));
 				writingCode = 1;
 				metadata->received = time(NULL);
+				*(statuses + index) = 6; // Status 6: Connected and writing code
 			}
+
 		}
 	bytesRead = read(connection, text, 1024);	
 
