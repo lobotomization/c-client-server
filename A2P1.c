@@ -1,5 +1,6 @@
 //TEST TEST THIS IS A TEST
 //THIS IS ANOTHER TEST
+//Test three
 #include <stdio.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -16,7 +17,28 @@
 #include <fcntl.h>     
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <pthread.h>
 #define NUMCHLD 10
+#define opensharedmem(shmname, shmfd, type, arrayname, length){\
+	(shmfd) = shm_open((shmname), O_RDWR|O_CREAT, 0666);\
+	ftruncate((shmfd), sizeof(type)*(length));\
+	(arrayname) = (type *)mmap(0, sizeof(type)*(length), PROT_READ | PROT_WRITE, MAP_SHARED, (shmfd), 0);\
+}\
+while(0)
+
+#define initsharedmem(shmname, shmfd, type, arrayname, length){\
+	opensharedmem(shmname, shmfd, type, arrayname, length);\
+	memset((arrayname), 0, sizeof(type)*(length));\
+}\
+while(0)
+
+#define closesharedmem(shmname, shmfd, type, arrayname, length){\
+	munmap((arrayname), (length)*sizeof(type));\
+	shm_unlink(shmname);\
+	close(shmfd);\
+}\
+while(0)
+
 struct sockaddr_in getSockaddrFromPort(int port);
 struct prog_stats{
 	int size;
@@ -43,12 +65,15 @@ char * stringToLower(char *str, int n);
 FILE * fileFromPort(int port, char *outName);
 int writeLongToString(char *str, long l, int offset);
 void printMetadata(int fd, struct prog_stats *metadata);
+
 int main(int argc, char **argv){
 
 	//const int NUMCHLD = 10;
-	int pid = 0, index = 0, *PIDTable; //Slot 0 reserved for LOCK
-	int shmfd, PIDshmfd;
-	void *shm;
+	int pid = 0, index = 0; 
+	int shmfd;
+	struct prog_stats *childstatus = NULL;
+	pthread_mutex_t lock;
+	pthread_mutex_init(&lock, NULL);
 	/*void reaper(int signal){
 		wait(NULL);
 		children--;
@@ -58,44 +83,55 @@ int main(int argc, char **argv){
 		perror("Registering zombie reaper failed");
 		return EXIT_FAILURE;
 	}*/
-	struct prog_stats *childstatus = NULL;
 
-	PIDshmfd = shm_open("PIDTable", O_RDWR|O_CREAT, 0666);
+
+	/*PIDshmfd = shm_open("PIDTable", O_RDWR|O_CREAT, 0666);
 	ftruncate(PIDshmfd, sizeof(int)*(NUMCHLD + 1));
 	PIDTable = (int *)mmap(0, sizeof(int)*(NUMCHLD + 1), PROT_READ | PROT_WRITE, MAP_SHARED, PIDshmfd, 0);
-	memset(PIDTable, 0, sizeof(int)*(NUMCHLD + 1));
+	memset(PIDTable, 0, sizeof(int)*(NUMCHLD + 1));*/
 
-
+	int *PIDTable;
+	int PIDshmfd;
+	initsharedmem("PIDTable", PIDshmfd, int, PIDTable, NUMCHLD); //This line makes an area of shared memory whose name is "PIDTable", with type int and length NUMCHLD
+																	 //The pointer to shared memory is stored in the PIDTable variable
+	pthread_mutex_t *lockmem;
+	int lockshmfd;
+	initsharedmem("lock", lockshmfd, pthread_mutex_t, lockmem, 1);
+	*lockmem = lock; //This should set the shared memory to contain the address of the parent's mutex lock
 	spawnChildren(NUMCHLD);
 	while(1){
 		if(-1 == (pid = wait(NULL))){
 			perror("Child exited crappily");
 		}
 		printf("Child exited with PID: %d\n", (int)pid);
-		for(index = 1; index <=NUMCHLD; index++){
+		for(index = 0; index < NUMCHLD; index++){
 			printf("PID[%d] = %d\n", index, *(PIDTable + index));
 		}
-		while(*PIDTable == 1){
-			sleep(1);
-		}
-		if(*PIDTable == 0)
-		*PIDTable = 1;
-		for(index = 1; *(PIDTable + index) != (int)pid && index <=NUMCHLD; index++); //Calculate index
+		//while(*PIDTable == 1){
+		//	sleep(1);
+		//}
+		//if(*PIDTable == 0)
+		//*PIDTable = 1;
+
+		pthread_mutex_lock(&lock);
+		for(index = 0; *(PIDTable + index) != (int)pid && index < NUMCHLD; index++); //Calculate index
 		printf("Deleting index %d\n", index); 
 		*(PIDTable + index) = 0;
-		*PIDTable = 0;
-		printf("Lock status: %d\n", *PIDTable);
+		//*PIDTable = 0;
+		//printf("Lock status: %d\n", *PIDTable);
 
-		shmfd = shm_open("metadata", O_RDWR|O_CREAT, 0666);
+		/*shmfd = shm_open("metadata", O_RDWR|O_CREAT, 0666);
 		ftruncate(shmfd, sizeof(struct prog_stats)); 
 		shm = mmap(0,sizeof(struct prog_stats), PROT_READ | PROT_WRITE, MAP_SHARED, shmfd, 0);
-		childstatus = (struct prog_stats *)shm;
+		childstatus = (struct prog_stats *)shm;*/
+		opensharedmem("metadata", shmfd, struct prog_stats, childstatus, 1);
+		printMetadata(1, childstatus);
+		closesharedmem("metadata", shmfd, struct prog_stats, childstatus, 1);
+		pthread_mutex_unlock(&lock);
 
-		//printMetadata(1, childstatus);
-
-		munmap(shm, sizeof(struct prog_stats));
+		/*munmap(shm, sizeof(struct prog_stats));
 		shm_unlink("metadata");
-		close(shmfd);
+		close(shmfd);*/
 
 		spawnChildren(1);
 	}
@@ -107,26 +143,44 @@ int main(int argc, char **argv){
 int spawnChildren(int num){
 	int children = 0, pid = 0;
 
+
+	//pthread_mutex_init(&lock, NULL);
 	while(children < num)
 	{
 		printf("Parent forking a child process...\n");			
 		pid = fork();
 		if(0 == pid)
 		{
+			/*pthread_mutex_t *lockmem;
+			int lockshmfd;
+			opensharedmem("lock", lockshmfd, pthread_mutex_t, lockmem, 1);
+			pthread_mutex_t lock = *lockmem;*/
+			struct flock f_lock;
+			f_lock.l_type = F_WRLCK;
+			f_lock.l_whence = SEEK_SET;
+			f_lock.l_start = 0;
+			f_lock.l_len = sizeof(int)*(NUMCHLD + 1);
+
 			int PIDshmfd = shm_open("PIDTable", O_RDWR|O_CREAT, 0666), index = 0;
 			ftruncate(PIDshmfd, sizeof(int)*(NUMCHLD + 1));
 			int *PIDTable = (int *)mmap(0, sizeof(int)*(NUMCHLD + 1), PROT_READ | PROT_WRITE, MAP_SHARED, PIDshmfd, 0);
-			while(*PIDTable == 1){   //Be super careful about this, race conditions might happen here or in the next block!
+			/*while(*PIDTable == 1){   //Be super careful about this, race conditions might happen here or in the next block!
 				sleep(1);
 			}
 			if(*PIDTable == 0){				///This is where proper locking needs to happen, race conditions can still happen here :(
-				*PIDTable = 1;
-				for(index = 1; *(PIDTable + index) != 0 && index <=NUMCHLD; index++); //Calculate index
+				*PIDTable = 1;*/
+				//pthread_mutex_lock(&lock);
+				fcntl(PIDshmfd, F_SETLKW, &f_lock);
+				for(index = 0; *(PIDTable + index) != 0 && index < NUMCHLD; index++); //Calculate index
 				printf("Now adding PID %d to index %d\n", (int)getpid(), index);
 				*(PIDTable + index) = (int)getpid();
-				*PIDTable = 0;
-				}
-			return spawnChild();
+				f_lock.l_type = F_UNLCK;
+				fcntl(PIDshmfd, F_SETLK, &f_lock);
+				//pthread_mutex_unlock(&lock);
+				//*PIDTable = 0;
+				//}
+			spawnChild();
+			return (int)getpid();
 		}
 		else if(0 > pid){
 			perror("Fork failed");
@@ -251,26 +305,30 @@ void handleConnection(int connection, int port){
 				dprintf(connection, "Compilation failed\n");
 			}
 			metadata->replytime = time(NULL);
-
+			int shmfd;
+			struct prog_stats *shmprogstats;
+			opensharedmem("metadata", shmfd, struct prog_stats, shmprogstats, 1);
+			/*
 			int shmfd = shm_open("metadata", O_RDWR|O_CREAT, 0666);
 			ftruncate(shmfd, sizeof(struct prog_stats)); //I should figure out a better bound than just 4KB for no good reason
 			void *shm = mmap(0,sizeof(struct prog_stats), PROT_READ | PROT_WRITE, MAP_SHARED, shmfd, 0);  //Link shared memory
+			*/
+			memcpy((void *)shmprogstats, (void *)metadata, sizeof(struct prog_stats));
 
-			memcpy(shm, (void *)metadata, sizeof(struct prog_stats));
-
-			struct prog_stats *shmprogstats = (struct prog_stats *)shm; //Cast the void shm pointer to a struct type to access fields
-			shmprogstats -> sourcename = malloc(strlen(metadata->sourcename));
+			//struct prog_stats *shmprogstats = (struct prog_stats *)shm; //Cast the void shm pointer to a struct type to access fields
+			shmprogstats -> sourcename = (char *)malloc(strlen(metadata->sourcename));
 			strncpy(shmprogstats -> sourcename, metadata->sourcename, strlen(metadata->sourcename) + 1); 
 			//These strncpy and malloc lines make sure that shm has a copy of the data being pointed to
 			//Rather than just a copy of the pointers
 			shmprogstats -> execname = malloc(strlen(metadata->execname));
 			strncpy(shmprogstats -> execname, metadata->execname, strlen(metadata->execname) + 1);
-	
-			munmap(shm, sizeof(struct prog_stats));
-			shm_unlink("metadata");
+			printMetadata(connection, shmprogstats);
+
+			//munmap(shm, sizeof(struct prog_stats));
+			//shm_unlink("metadata");
 			close(shmfd);
 			
-			printMetadata(connection, metadata);
+			//printMetadata(connection, metadata);
 		}
 
 		if(0 == writingCode && 0 == strncmp(text, start, 5)){
