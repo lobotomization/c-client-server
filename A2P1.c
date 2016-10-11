@@ -17,7 +17,7 @@
 #include <fcntl.h>     
 #include <netinet/in.h>
 #include <arpa/inet.h>
-#include <pthread.h>
+//#include <pthread.h>
 #define NUMCHLD 10
 #define opensharedmem(shmname, shmfd, type, arrayname, length){\
 	(shmfd) = shm_open((shmname), O_RDWR|O_CREAT, 0666);\
@@ -75,6 +75,7 @@ int main(int argc, char **argv){
 	int pid = 0, index = 0; 
 	int shmfd;
 	struct prog_stats *childstatus = NULL;
+	initsharedmem("metadata", shmfd, struct prog_stats, childstatus, 1);
 	/*void reaper(int signal){
 		wait(NULL);
 		children--;
@@ -86,7 +87,7 @@ int main(int argc, char **argv){
 	}*/
 	int statusshmfd;												//initialize the statuses to zero
 	int *statuses;
-	initsharedmem("status", statusshmfd, int, statuses, sizeof(int)*NUMCHLD);
+	initsharedmem("status", statusshmfd, int, statuses, NUMCHLD);
 
 
 	if(SIG_ERR == signal(SIGUSR1, status))
@@ -126,7 +127,7 @@ int main(int argc, char **argv){
 
 
 		fcntl(PIDshmfd, F_SETLKW, &pid_lock);
-		for(index = 0; *(PIDTable + index) != (int)pid && index < NUMCHLD; index++); //Calculate index
+		for(index = 0; *(PIDTable + index) != (int)pid && *(statuses + index) != 14 && index < NUMCHLD; index++); //Calculate index
 		printf("Deleting index %d\n", index); 
 		*(PIDTable + index) = 0;
 		pid_lock.l_type = F_UNLCK;
@@ -148,7 +149,7 @@ int main(int argc, char **argv){
 void status(int signal){
 	int statusshmfd;
 	int *statuses;
-	opensharedmem("status", statusshmfd, int, statuses, sizeof(int)*NUMCHLD);
+	opensharedmem("status", statusshmfd, int, statuses, NUMCHLD);
 	int *PIDTable;
 	int PIDshmfd;
 	opensharedmem("PIDTable", PIDshmfd, int, PIDTable, NUMCHLD);
@@ -173,7 +174,7 @@ char *statusPrinter(int status){
 		case 4:
 		return "Connected";
 		case 5:
-		return "Connected and reading";
+		return "Connected and reading"; //Children appear to be getting stuck in this state when the client is closed abruptly...
 		case 6:
 		return "Connected and writing code";
 		case 7:
@@ -186,12 +187,18 @@ char *statusPrinter(int status){
 		return "Connected and writing metadata";
 		case 11:
 		return "Stopping";
+		case 12:
+		return "Exiting";
+		case 13:
+		return "Connection closed";
+		case 14:
+		return "Child process completed"; //This state is used to determine where to place new PIDs in the PIDtable
 		default:
 		return "Unknown state";
 	}
 }
 int spawnChildren(int num){
-	int children = 0, pid = 0;
+	int children = 0, pid = 0, returnCode = 0;
 
 
 	//pthread_mutex_init(&lock, NULL);
@@ -213,7 +220,7 @@ int spawnChildren(int num){
 
 			int statusshmfd;
 			int *statuses;
-			opensharedmem("status", statusshmfd, int, statuses, sizeof(int)*NUMCHLD);
+			opensharedmem("status", statusshmfd, int, statuses, NUMCHLD);
 
 			int *PIDTable;
 			int PIDshmfd , index;
@@ -228,6 +235,8 @@ int spawnChildren(int num){
 			*(statuses + index) = 1; //Status 1: Initializing
 
 			spawnChild();
+			*(statuses + index) = 14; //Status 14: Child process completed
+
 			return (int)getpid();
 		}
 		else if(0 > pid){
@@ -236,6 +245,10 @@ int spawnChildren(int num){
 		}
 		children++; 
 	}
+	/*while(children--){
+	wait(&returnCode);
+	printf("From spawnChildren: Child exited with return code: %d\n", returnCode);
+	}*/
 	return EXIT_SUCCESS;
 }
 
@@ -245,7 +258,7 @@ int spawnChild(){
 
 	int statusshmfd;
 	int *statuses;
-	opensharedmem("status", statusshmfd, int, statuses, sizeof(int)*NUMCHLD);
+	opensharedmem("status", statusshmfd, int, statuses, NUMCHLD);
 
 	int *PIDTable;
 	int PIDshmfd , index;
@@ -268,7 +281,8 @@ int spawnChild(){
 		perror("Accepting connection failed, child exiting...");
 		return EXIT_FAILURE;				
 	}
-	handleConnection(connection, port);
+	handleConnection(connection, port); //connection -> listener
+	*(statuses + index) = 12; // Status 12: Exiting
 	printf("Child process connection now exiting...\n");
 		if(-1 == shutdown(connection, SHUT_RDWR))
 	{
@@ -279,6 +293,7 @@ int spawnChild(){
 	}
 	close(connection);
 	close(listener);
+	*(statuses + index) = 13; // Status 13: Connection closed
 	return EXIT_SUCCESS;
 }
 
@@ -290,7 +305,7 @@ void handleConnection(int connection, int port){
 	//fcntl(connection, F_SETFD, FD_CLOEXEC);
 	int statusshmfd;
 	int *statuses;
-	opensharedmem("status", statusshmfd, int, statuses, sizeof(int)*NUMCHLD);
+	opensharedmem("status", statusshmfd, int, statuses, NUMCHLD);
 
 	int *PIDTable;
 	int PIDshmfd , index;
@@ -350,7 +365,6 @@ void handleConnection(int connection, int port){
 			if(returnCode == 0){
 				*(statuses + index) = 9; // Status 9: Connected and executing code
 				executeCode(execname, connection);
-
 			}
 			wait(&returnCode);
 			
