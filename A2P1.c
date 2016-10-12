@@ -186,7 +186,7 @@ char *statusPrinter(int status){
 		case 10:
 		return "Connected and writing metadata";
 		case 11:
-		return "Stopping";
+		return "Ending session";
 		case 12:
 		return "Exiting";
 		case 13:
@@ -320,10 +320,10 @@ void handleConnection(int connection, int port){
 	int bytesRead, writingCode = 0, returnCode = 0, size = 0;
 	char text[1024] = {0}, sourcename[100] = {0}, execname[100] = {0};
 
-	const char start[] = "start", end[] = "end", stop[] = "stop";
-	const char welcome[] = "Welcome to Ian's C auto-compiling server security nightmare!\nType \"%s\" to begin coding and \"%s\" to submit your code and \"%s\" to stop\n";
+	const char start[] = "start", end[] = "exit", stop[] = "stop";
+	const char welcome[] = "Welcome to Ian's C auto-compiling server security nightmare!\nType \"%s\" to begin coding and \"%s\" to submit your code and \"%s\" to end the session\n";
 	
-	dprintf(connection, welcome, start, end, stop);
+	dprintf(connection, welcome, start, stop, end);
 	*(statuses + index) = 5; // Status 5: Connected and reading
 	bytesRead = read(connection, text, 1024);
 	while(-1 != bytesRead)
@@ -331,19 +331,19 @@ void handleConnection(int connection, int port){
 
 		
 
-		if(0 == strncmp(text, stop, 4)){
-			*(statuses + index) = 11; // Status 11: Stopping
+		if(0 == strncmp(text, end, strlen(end))){
+			*(statuses + index) = 11; // Status 11: Ending session
 			if(1 == writingCode){
 				fclose(outFile);
 			}
 			break;
 		}
-		if(1 == writingCode && 0 != strncmp(text, end, 3)){
+		if(1 == writingCode && 0 != strncmp(text, stop, strlen(stop))){
 			fwrite(text, sizeof(char), bytesRead, outFile); 
 			size += bytesRead;				
 		}
 
-		if(1 == writingCode && 0 == strncmp(text, end, 3)){
+		if(1 == writingCode && 0 == strncmp(text, stop, strlen(stop))){
 			*(statuses + index) = 7; // Status 7: Connected and stopping coding
 			writingCode = 0;
 			fclose(outFile);
@@ -421,7 +421,7 @@ void handleConnection(int connection, int port){
 			//printMetadata(connection, metadata);
 		}
 
-		if(0 == writingCode && 0 == strncmp(text, start, 5)){
+		if(0 == writingCode && 0 == strncmp(text, start, strlen(start))){
 			outFile = fileFromPort(port, sourcename);	
 			printf("Filename received: %s\n", sourcename);		
 			if(NULL == outFile){
@@ -429,6 +429,8 @@ void handleConnection(int connection, int port){
 			}
 			else{
 				write(connection, "Now writing code to file\n", sizeof("Now writing code to file\n"));
+				//write(connection, "done", sizeof("done"));
+
 				writingCode = 1;
 				metadata->received = time(NULL);
 				*(statuses + index) = 6; // Status 6: Connected and writing code
@@ -454,13 +456,8 @@ void executeCode(char *execname, int connection){
 
 void compileCode(char *sourcename, char *execname, int connection){
 	char *argv[5] = {"gcc", sourcename, "-o", execname, NULL};
-	//argv[0] = "gcc";
-	//argv[1] = sourcename;
 	printf("Source code filename is: %s\n", sourcename);
-	//argv[2] = "-o";
-	//argv[3] = execname;
 	printf("Executable filename is: %s\n", execname);
-	//argv[4] = NULL;
 	write(connection, "Now compiling code...\n", sizeof("Now compiling code...\n"));
 	int pid = fork();
 	if(pid == 0){
@@ -503,7 +500,7 @@ int listenOnPort(int INITPORT, int *listener){
 	return INITPORT + portCounter - 1;
 }
 
-char * stringToUpper(char *str, int n){ //Makes the first n chars of a string uppercase
+char *stringToUpper(char *str, int n){ //Makes the first n chars of a string uppercase
 	const char *out = str;
 	while(*str != '\0'&& n > 0){
 		*str = toupper(*str);
@@ -524,7 +521,7 @@ char * stringToLower(char *str, int n){ //Makes the first n chars of a string lo
 }
 
 
-FILE * fileFromPort(int port, char *outName){
+FILE *fileFromPort(int port, char *outName){
 	int offset = 0;
  	char filename[100] = {0};
 	offset += writeLongToString(filename, port, offset);
