@@ -31,7 +31,10 @@ int main(int argc, char* argv[]){
 		}
 	}
 
-	connectOnPort(initPort, serverAddress, &socket);
+	if(-1 == connectOnPort(initPort, serverAddress, &socket)){
+		fprintf(stderr, "Connecting failed!\nAre you sure the client is available?\n");
+		return -1;
+	}
 
 	pthread_t readID, writeID;
 	pthread_create(&readID, NULL, &readThread, &socket);
@@ -165,6 +168,9 @@ int connectOnPort(int INITPORT, char *server, int *listener){
 	{
 		fprintf(stderr, "Connect failed on port %d\n", INITPORT + portCounter - 1);
 		servProps = getSockaddrFromPortAndServer(INITPORT + portCounter, server);
+		if(99 == portCounter){  //Bail out on hundredth port
+			return -1;
+		}
 	}
 	printf("Connected socket to port %d\n", INITPORT + portCounter - 1);
 	return INITPORT + portCounter - 1;
