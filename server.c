@@ -1,67 +1,29 @@
-//TEST TEST THIS IS A TEST
-//THIS IS ANOTHER TEST
-//Test three
-#include <stdio.h>
-#include <unistd.h>
-#include <stdlib.h>
-#include <string.h>
-#include <signal.h>
-#include <time.h>
-#include <ctype.h>
-#include <fcntl.h>
-#include <sys/types.h>
-#include <sys/wait.h>
-#include <sys/socket.h>
-#include <sys/mman.h>
-#include <sys/stat.h>       
-#include <fcntl.h>     
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <errno.h>
-//#include <pthread.h>
-#define NUMCHLD 10
+#include "headers.h"
+#define NUMCHLD 10 	//Number of connection handling child processes
 #define TIMEOUT 900 //900 seconds = 15 minute timeout
-#define opensharedmem(shmname, shmfd, type, arrayname, length){\
-	(shmfd) = shm_open((shmname), O_RDWR|O_CREAT, 0666);\
-	ftruncate((shmfd), sizeof(type)*(length));\
-	(arrayname) = (type *)mmap(0, sizeof(type)*(length), PROT_READ | PROT_WRITE, MAP_SHARED, (shmfd), 0);\
-}\
-while(0)
-
-#define initsharedmem(shmname, shmfd, type, arrayname, length){\
-	opensharedmem(shmname, shmfd, type, arrayname, length);\
-	memset((arrayname), 0, sizeof(type)*(length));\
-}\
-while(0)
-
-#define closesharedmem(shmname, shmfd, type, arrayname, length){\
-	munmap((arrayname), (length)*sizeof(type));\
-	shm_unlink(shmname);\
-	close(shmfd);\
-}\
-while(0)
 
 
 struct prog_stats{
-	int size;
-	int compexitstatus;
-	char *sourcename;
-	char *execname;
-	int progexitstatus;
-	time_t received;
-	time_t written;
-	time_t compiled;
-	time_t started;
-	time_t finished;
-	time_t runtime;
-	time_t replytime;
-	time_t deleted;
+	int size;				//Size of program in bytes
+	int compexitstatus;		//Compiler exit status
+	char *sourcename;		//Name of the source code file being written
+	char *execname;			//Name of the executable file being created
+	int progexitstatus;		//Exit status of the users program									//This struct holds metadata about the programs being run
+	time_t received;		//Time when program is starting to be received 
+	time_t written;			//Time when program was written to disk
+	time_t compiled;		//Time when program was compiled
+	time_t started;			//Time when program started executing
+	time_t finished;		//Time when it finished
+	time_t runtime;			//Total runtime of the program
+	time_t replytime;		//Time when server finished sending all of the responses to the client
+	time_t deleted;			//Time when the data was deleted from disk
 };
 
 struct status{
-	int statusID;
-	time_t start;
+	int statusID;	//Current status of child 													//This struct holds information on the status of the child processes
+	time_t start;	//Time when child entered this state
 };
+
 void killServerGracefully(int signal);
 char *statusPrinter(int status);
 void status(int signal);
@@ -72,38 +34,27 @@ int spawnChildren(int num);
 int spawnChild();
 void handleConnection(int listener, int connection, int port);
 int listenOnPort(int INITPORT, int *listener);
-char * stringToUpper(char *str, int n);
-char * stringToLower(char *str, int n);
-FILE * fileFromPort(int port, char *outName);
-int writeLongToString(char *str, long l, int offset);
+FILE *fileFromPort(int port, char *outName);
 void printMetadata(int fd, struct prog_stats *metadata);
 
 int main(int argc, char **argv){
 
 	int pid = 0, index = 0; 
 	int shmfd;
-	struct prog_stats *childstatus = NULL;
+	struct prog_stats *childstatus = NULL;									//Initialize the shared mem for program metadata to zero
 	initsharedmem("metadata", shmfd, struct prog_stats, childstatus, 1);
-	/*void reaper(int signal){
-		wait(NULL);
-		children--;
-	}
-	if(SIG_ERR == signal(SIGCHLD, reaper))
-	{
-		perror("Registering zombie reaper failed");
-		return EXIT_FAILURE;
-	}*/
-	int statusshmfd;												//initialize the statuses to zero
+
+	int statusshmfd;														//Initialize the shared memory for statuses to zero
 	struct status *statuses;
 	initsharedmem("status", statusshmfd, struct status, statuses, NUMCHLD);
 
-	if(SIG_ERR == signal(SIGUSR1, status))
+	if(SIG_ERR == signal(SIGUSR1, status))									//Attempt to register the SIGUSR1 handler
 	{
-		perror("Registering status printer failed");
+		perror("Registering status printer failed");			
 		return EXIT_FAILURE;
 	}
 
-	if(SIG_ERR == signal(SIGUSR2, killServerGracefully))
+	if(SIG_ERR == signal(SIGUSR2, killServerGracefully))					//Attempt to register the SIGUSR2 handler
 	{
 		perror("Registering graceful server ending signal (SIGUSR2) failed");
 		return EXIT_FAILURE;
@@ -111,52 +62,51 @@ int main(int argc, char **argv){
 	int *PIDTable;
 	int PIDshmfd;
 	initsharedmem("PIDTable", PIDshmfd, int, PIDTable, NUMCHLD); //This line makes an area of shared memory whose name is "PIDTable", with type int and length NUMCHLD
-																	 //The pointer to shared memory is stored in the PIDTable variable
+									 							//The pointer to shared memory is stored in the PIDTable variable
 	struct flock pid_lock, meta_lock;
 
 	pid_lock.l_type = F_WRLCK;
 	pid_lock.l_whence = SEEK_SET;
-	pid_lock.l_start = 0;
-	pid_lock.l_len = sizeof(int)*(NUMCHLD + 1);
+	pid_lock.l_start = 0;										//This is a file lock for the PID table
+	pid_lock.l_len = sizeof(int)*(NUMCHLD + 1);					//It maintains mutual exclusion
 
 	meta_lock.l_type = F_WRLCK;
 	meta_lock.l_whence = SEEK_SET;
-	meta_lock.l_start = 0;
+	meta_lock.l_start = 0;										//This is a file lock for the metadata
 	meta_lock.l_len = sizeof(struct prog_stats);
 
-	spawnChildren(NUMCHLD);
+	spawnChildren(NUMCHLD);										//Spawn a bunch of children
 	pid = fork();
 	if(pid > 0){ //Do parent stuff
 		while(1){
-			if(-1 == (pid = wait(NULL))){
-				perror("Child exited crappily");
+			if(-1 == (pid = wait(NULL))){						//Wait for a child to exit
+				perror("Child exited badly");
 			}
 
-			opensharedmem("metadata", shmfd, struct prog_stats, childstatus, 1);
+			opensharedmem("metadata", shmfd, struct prog_stats, childstatus, 1);	//Open the metadata and lock it
 			fcntl(shmfd, F_SETLKW, &meta_lock);
 
-			printf("Child exited with PID: %d\n", (int)pid);
+			printf("Child exited with PID: %d\n", (int)pid);						//A PID table is used to give each child an ID. The ID is the index in the table.
 			for(index = 0; index < NUMCHLD; index++){
-				printf("PID[%d] = %d\n", index, *(PIDTable + index));
+				printf("PID[%d] = %d\n", index, *(PIDTable + index));				//Print the child's PID and the PID table
 			}
 
 
-			fcntl(PIDshmfd, F_SETLKW, &pid_lock);
+			fcntl(PIDshmfd, F_SETLKW, &pid_lock);									//Lock the PID table memory, get the new index in the PID table	
 			for(index = 0; *(PIDTable + index) != (int)pid && (statuses + index)->statusID != 14 && index < NUMCHLD; index++); //Calculate index
 			printf("Deleting index %d\n", index); 
-			*(PIDTable + index) = 0;
+			*(PIDTable + index) = 0;												//Zero out the unused entry in the PID table
 			pid_lock.l_type = F_UNLCK;
 			fcntl(PIDshmfd, F_SETLK, &pid_lock);
 
 
-			//opensharedmem("metadata", shmfd, struct prog_stats, childstatus, 1);
 			printMetadata(1, childstatus);
-			closesharedmem("metadata", shmfd, struct prog_stats, childstatus, 1);
+			closesharedmem("metadata", shmfd, struct prog_stats, childstatus, 1); //Print the metadata and close it out
 			meta_lock.l_type = F_UNLCK;
 			fcntl(shmfd, F_SETLK, &meta_lock);
 
 
-			spawnChildren(1);
+			spawnChildren(1);	//Spawn a new child to replace the old one
 		}
 	}else if(pid == 0){			//This child process periodically scans for child processes which are taking too long in any state other than listening i.e. the default state
 		while(1){
@@ -169,28 +119,33 @@ int main(int argc, char **argv){
 				}
 			}
 		}
+	}else if(pid < 0){
+		perror("Spawning timeout handler failed, children will not time out");	
 	}
 
 }
-void killServerGracefully(int signal){
+
+void killServerGracefully(int signal){	//This sends a SIGTERM signal everywhere when a SIGUSR2 signal is received. SIGTERM is handled by the children to exit gracefully
+	printf("SIGUSR2 Received, now killing processes\n");
 	kill(0, SIGTERM);
 }
-void status(int signal){
+void status(int signal){				//This prints out the statuses of the child processes when a SIGUSR1 signal is received
+	printf("SIGUSR1 Received, now printing process stats\n");
+
 	int statusshmfd;
 	struct status *statuses;
 	opensharedmem("status", statusshmfd, struct status, statuses, NUMCHLD);
+
 	int *PIDTable;
 	int PIDshmfd;
 	opensharedmem("PIDTable", PIDshmfd, int, PIDTable, NUMCHLD);
 	printf("Index number\tPID\tStatus\t\t\tTime in State\n");
 	for(int i = 0; i < NUMCHLD; i++){
 		printf("%d\t\t%d\t%s\t\t\t%lu\n", i, *(PIDTable + i), statusPrinter((statuses+i)->statusID), time(NULL) - (statuses+i)->start);
-		//printf("*(statuses + %d) = %p\n", i, *(statuses + i));
-		//printf("*(statuses + %d) points to the string %s\n", i, *(statuses + i));
 	}
 
 }
-char *statusPrinter(int status){
+char *statusPrinter(int status){	//This returns the string corresponding to the staus ID
 	switch(status){
 		case 0:
 		return "Unstarted";
@@ -226,45 +181,42 @@ char *statusPrinter(int status){
 		return "Unknown state";
 	}
 }
-int spawnChildren(int num){
-	int children = 0, pid = 0, returnCode = 0;
+int spawnChildren(int num){		//Spawns a number of connection handling children
+	int children = 0, pid = 0;
 
 
-	//pthread_mutex_init(&lock, NULL);
+
 	while(children < num)
 	{
 		printf("Parent forking a child process...\n");			
 		pid = fork();
 		if(0 == pid)
 		{
-			/*pthread_mutex_t *lockmem;
-			int lockshmfd;
-			opensharedmem("lock", lockshmfd, pthread_mutex_t, lockmem, 1);
-			pthread_mutex_t lock = *lockmem;*/
 			struct flock f_lock;
 			f_lock.l_type = F_WRLCK;
-			f_lock.l_whence = SEEK_SET;
+			f_lock.l_whence = SEEK_SET;				//Lock used for PID table access
 			f_lock.l_start = 0;
 			f_lock.l_len = sizeof(int)*(NUMCHLD + 1);
 
 			int statusshmfd;
-			struct status *statuses;
+			struct status *statuses;			//Open the status memory
 			opensharedmem("status", statusshmfd, struct status, statuses, NUMCHLD);
 
 			int *PIDTable;
-			int PIDshmfd , index;
+			int PIDshmfd , index;				//Open the PID table
 			opensharedmem("PIDTable", PIDshmfd, int, PIDTable, NUMCHLD);
 
 			fcntl(PIDshmfd, F_SETLKW, &f_lock);
 			for(index = 0; *(PIDTable + index) != 0 && index < NUMCHLD; index++); //Calculate index
 			printf("Now adding PID %d to index %d\n", (int)getpid(), index);
-			*(PIDTable + index) = (int)getpid();
+			*(PIDTable + index) = (int)getpid();	//Add the new child PID to the PID table
 			f_lock.l_type = F_UNLCK;
 			fcntl(PIDshmfd, F_SETLK, &f_lock);
 			(statuses + index)->statusID = 1; //Status 1: Initializing
 			(statuses + index)->start = time(NULL);
 
-			spawnChild();
+			spawnChild();						//This is the main code for a child
+
 			(statuses + index)->statusID = 14; //Status 14: Child process completed
 			(statuses + index)->start = time(NULL);
 
@@ -277,10 +229,6 @@ int spawnChildren(int num){
 		}
 		children++; 
 	}
-	/*while(children--){
-	wait(&returnCode);
-	printf("From spawnChildren: Child exited with return code: %d\n", returnCode);
-	}*/
 	return EXIT_SUCCESS;
 }
 
@@ -289,14 +237,15 @@ int spawnChild(){
 	int listener, connection, port;
 
 	int statusshmfd;
-	struct status *statuses;
+	struct status *statuses;		//Open up the statuses
 	opensharedmem("status", statusshmfd, struct status, statuses, NUMCHLD);
 
 	int *PIDTable;
-	int PIDshmfd , index;
+	int PIDshmfd;			//Open up the PID table
 	opensharedmem("PIDTable", PIDshmfd, int, PIDTable, NUMCHLD);
-	for(index = 0; *(PIDTable + index) != getpid() && index < NUMCHLD; index++);
-	//printf("%s\n", *(statuses + index));
+
+	int index;
+	for(index = 0; *(PIDTable + index) != getpid() && index < NUMCHLD; index++); //Get the index of the child
 
 	printf("Child process spawned...\n");
 	if(-1 == (port = listenOnPort(INITPORT, &listener))) //Port # is picked here
@@ -316,7 +265,9 @@ int spawnChild(){
 		perror("Accepting connection failed, child exiting...");
 		return EXIT_FAILURE;				
 	}
-	handleConnection(listener, connection, port); 
+
+	handleConnection(listener, connection, port); 		//This handles an incoming connection
+
 	(statuses + index)->statusID = 12; // Status 12: Exiting
 	(statuses + index)->start = time(NULL);
 
@@ -338,17 +289,17 @@ int spawnChild(){
 
 void handleConnection(int listener, int connection, int port){
 
-
-
-
 	int statusshmfd;
-	struct status *statuses;
+	struct status *statuses;		//Open up the statuses
 	opensharedmem("status", statusshmfd, struct status, statuses, NUMCHLD);
 
 	int *PIDTable;
-	int PIDshmfd , index;
+	int PIDshmfd;					//Open up the PID table
 	opensharedmem("PIDTable", PIDshmfd, int, PIDTable, NUMCHLD);
-	for(index = 0; *(PIDTable + index) != getpid() && index < NUMCHLD; index++);
+
+	int index;
+	for(index = 0; *(PIDTable + index) != getpid() && index < NUMCHLD; index++); //Get the index of the child
+
 	(statuses + index)->statusID = 4; // Status 4: Connected
 	(statuses + index)->start = time(NULL);
 
@@ -362,13 +313,14 @@ void handleConnection(int listener, int connection, int port){
 	const char start[] = "start", end[] = "exit", stop[] = "stop";
 	const char welcome[] = "Welcome to Ian's C auto-compiling server security nightmare!\nType \"%s\" to begin coding and \"%s\" to submit your code and \"%s\" to end the session\n";
 	
-	dprintf(connection, welcome, start, stop, end);
+	dprintf(connection, welcome, start, stop, end); //Print welcome message
+
 	(statuses + index)->statusID = 5; // Status 5: Connected and reading
 	(statuses + index)->start = time(NULL);
 
 
-	void dieGracefully(int signal){
-		if(dying == 0){
+	void dieGracefully(int signal){	//This is the graceful death handler used by SIGTERM
+		if(0 == dying){				//The dying flag makes sure no double close occurs
 			if(outFile != NULL){
 				fclose(outFile);
 			}
@@ -376,55 +328,53 @@ void handleConnection(int listener, int connection, int port){
 			unlink(execname);
 		}
 		dying = 1;
-		
-		//write()
 
 		
 		(statuses + index)->statusID = 12; // Status 12: Exiting
 		(statuses + index)->start = time(NULL);
 
 		printf("Child process connection now exiting...\n");
-			if(-1 == shutdown(connection, SHUT_RDWR))
+		if(-1 == shutdown(connection, SHUT_RDWR))
 		{
 			perror("Shutdown failed");
-			//close(connection);
-			//close(listener);
-			//return EXIT_FAILURE;
 		}
-		close(connection);
-		close(listener);
+		if(-1 == close(connection)){
+			perror("Closing connection failed");
+		}
+		if(-1 == close(listener)){
+			perror("Closing listener failed");
+		}
 		(statuses + index)->statusID = 13; // Status 13: Connection closed
 		(statuses + index)->start = time(NULL);
 		sleep(1);
 		kill(getpid(), SIGKILL);
-		//return EXIT_SUCCESS;
-		//return;
 	}
-	if(SIG_ERR == signal(SIGTERM, dieGracefully)){
+	if(SIG_ERR == signal(SIGTERM, dieGracefully)){	//Register graceful death handler
 		perror("Error registering SIGTERM handler");
 	}
 
-	bytesRead = read(connection, text, 1024);
+	bytesRead = read(connection, text, 1024);		//Start reading input from the user
 	while(-1 != bytesRead)
 	{
 
 		
 
-		if(1 == dying || 0 == strncmp(text, end, strlen(end))){
+		if(0 == strncmp(text, end, strlen(end))){	//Check if user input is the end token
 			(statuses + index)->statusID = 11; // Status 11: Ending session
 			(statuses + index)->start = time(NULL);
 
 			if(1 == writingCode){
 				fclose(outFile);
 			}
-			break;
+			break;							//Break out of the loop
 		}
-		if(1 == writingCode && 0 != strncmp(text, stop, strlen(stop))){
-			fwrite(text, sizeof(char), bytesRead, outFile); 
+
+		if(1 == writingCode && 0 != strncmp(text, stop, strlen(stop))){	//Check if the user is writing code doesn't want to stop
+			fwrite(text, sizeof(char), bytesRead, outFile); 			//Write their code to disk
 			size += bytesRead;				
 		}
 
-		if(1 == writingCode && 0 == strncmp(text, stop, strlen(stop))){
+		if(1 == writingCode && 0 == strncmp(text, stop, strlen(stop))){	//Check if the user is writing code and wants to stop
 			(statuses + index)->statusID = 7; // Status 7: Connected and stopping coding
 			(statuses + index)->start = time(NULL);
 
@@ -432,7 +382,7 @@ void handleConnection(int listener, int connection, int port){
 			fclose(outFile);
 			metadata->written = time(NULL);
 			write(connection, "Code written to file\n", sizeof("Code written to file\n"));
-			strncpy(execname, sourcename, strlen(sourcename));
+			strncpy(execname, sourcename, strlen(sourcename));								//Close the c file, store some metadata
 			*(execname + strlen(execname) - 2) = '\0'; //Chop off .c extension
 			metadata->size = size;
 			metadata->sourcename = sourcename;
@@ -440,9 +390,9 @@ void handleConnection(int listener, int connection, int port){
 			(statuses + index)->statusID = 8; // Status 8: Connected and compiling code
 			(statuses + index)->start = time(NULL);
 
-			compileCode(sourcename, execname, connection);
+			compileCode(sourcename, execname, connection);		//Compile the code
 
-			wait(&returnCode);
+			wait(&returnCode);									//Wait for the compilation to return
 			metadata->compiled = time(NULL);
 			metadata->compexitstatus = returnCode;
 			dprintf(connection, "Your return code is: %d\n", returnCode);	
@@ -450,15 +400,15 @@ void handleConnection(int listener, int connection, int port){
 			if(returnCode == 0){
 				(statuses + index)->statusID = 9; // Status 9: Connected and executing code
 				(statuses + index)->start = time(NULL);
-				executeCode(execname, connection);
+				executeCode(execname, connection);				//Execute the code
 			}
-			wait(&returnCode);
+			wait(&returnCode);									//Wait for the execution to return
 			
 
 			metadata->finished = time(NULL);
 			metadata->runtime = metadata->finished - metadata->started;
 			metadata->progexitstatus = returnCode;
-
+																//Write some metadata and delete the temp files
 			unlink(sourcename);
 			unlink(execname);
 			metadata->deleted = time(NULL);
@@ -473,7 +423,7 @@ void handleConnection(int listener, int connection, int port){
 
 			struct flock meta_lock;
 			meta_lock.l_type = F_WRLCK;
-			meta_lock.l_whence = SEEK_SET;
+			meta_lock.l_whence = SEEK_SET;				//This is a lock for writing the metadata to shared memory
 			meta_lock.l_start = 0;
 			meta_lock.l_len = sizeof(struct prog_stats);
 
@@ -481,45 +431,35 @@ void handleConnection(int listener, int connection, int port){
 			struct prog_stats *shmprogstats;
 			opensharedmem("metadata", shmfd, struct prog_stats, shmprogstats, 1);
 			fcntl(shmfd, F_SETLKW, &meta_lock);
+			
 			(statuses + index)->statusID = 10; // Status 10: Connected and writing metadata
 			(statuses + index)->start = time(NULL);
 
-			/*
-			int shmfd = shm_open("metadata", O_RDWR|O_CREAT, 0666);
-			ftruncate(shmfd, sizeof(struct prog_stats)); //I should figure out a better bound than just 4KB for no good reason
-			void *shm = mmap(0,sizeof(struct prog_stats), PROT_READ | PROT_WRITE, MAP_SHARED, shmfd, 0);  //Link shared memory
-			*/
 			memcpy((void *)shmprogstats, (void *)metadata, sizeof(struct prog_stats));
 
-			//struct prog_stats *shmprogstats = (struct prog_stats *)shm; //Cast the void shm pointer to a struct type to access fields
-			shmprogstats -> sourcename = (char *)malloc(strlen(metadata->sourcename));
-			strncpy(shmprogstats -> sourcename, metadata->sourcename, strlen(metadata->sourcename) + 1); 
-			//These strncpy and malloc lines make sure that shm has a copy of the data being pointed to
-			//Rather than just a copy of the pointers
-			shmprogstats -> execname = (char *)malloc(strlen(metadata->execname));
-			strncpy(shmprogstats -> execname, metadata->execname, strlen(metadata->execname) + 1);
+			shmprogstats -> sourcename = (char *)malloc(strlen(metadata->sourcename) + 1);					//These strncpy and malloc lines make sure that shmprogstats has a 
+			strncpy(shmprogstats -> sourcename, metadata->sourcename, strlen(metadata->sourcename) + 1);	//copy of the data being pointed to, rather than just a copy of the pointers
+			shmprogstats -> execname = (char *)malloc(strlen(metadata->execname) + 1);
+			strncpy(shmprogstats -> execname, metadata->execname, strlen(metadata->execname) + 1); 			
+
 			meta_lock.l_type = F_UNLCK;
 			fcntl(shmfd, F_SETLK, &meta_lock);
-			printMetadata(connection, shmprogstats);
-
-			//munmap(shm, sizeof(struct prog_stats));
-			//shm_unlink("metadata");
+			
+			
 			close(shmfd);
+
 			(statuses + index)->statusID = 5; // Status 5: Connected and reading
 			(statuses + index)->start = time(NULL);
-
-			//printMetadata(connection, metadata);
 		}
 
-		if(0 == writingCode && 0 == strncmp(text, start, strlen(start))){
-			outFile = fileFromPort(port, sourcename);	
+		if(0 == writingCode && 0 == strncmp(text, start, strlen(start))){	//If the user isn't writing code and wants to start
+			outFile = fileFromPort(port, sourcename);						//Create a file and start writing code to it
 			printf("Filename received: %s\n", sourcename);		
 			if(NULL == outFile){
 				perror("Failed to create file");
 			}
 			else{
 				write(connection, "Now writing code to file\n", sizeof("Now writing code to file\n"));
-				//write(connection, "done", sizeof("done"));
 
 				writingCode = 1;
 				metadata->received = time(NULL);
@@ -529,14 +469,11 @@ void handleConnection(int listener, int connection, int port){
 			}
 
 		}
-	bytesRead = read(connection, text, 1024);	
-
+	bytesRead = read(connection, text, 1024);	//Keep reading new input from user
 	}
-
-
 }
 
-void executeCode(char *execname, int connection){
+void executeCode(char *execname, int connection){	//This executes the given program redirects the output
 	char *argv[2] = {execname, NULL};
 	write(connection, "Now executing code...\n", sizeof("Now executing code...\n"));
 	int pid = fork();
@@ -548,7 +485,7 @@ void executeCode(char *execname, int connection){
 	}
 }
 
-void compileCode(char *sourcename, char *execname, int connection){
+void compileCode(char *sourcename, char *execname, int connection){	//This compiles some code and redirects the output
 	char *argv[5] = {"gcc", sourcename, "-o", execname, NULL};
 	printf("Source code filename is: %s\n", sourcename);
 	printf("Executable filename is: %s\n", execname);
@@ -560,18 +497,17 @@ void compileCode(char *sourcename, char *execname, int connection){
 		execvp(argv[0], argv); 		//Run gcc as a child of the child
 	}
 }
-struct sockaddr_in getSockaddrFromPort(int port){
+struct sockaddr_in getSockaddrFromPort(int port){	//This returns a sockaddr_in struct for the given port
 	struct sockaddr_in out;
 	memset(&out, 0, sizeof(out));
 	out.sin_port = htons(port);
-	//inet_aton(IP, (struct in_addr *)&out.sin_addr.s_addr);
 	out.sin_addr.s_addr = htonl(INADDR_ANY);
 	out.sin_family = AF_INET;
 	return out;
 }
 
-int listenOnPort(int INITPORT, int *listener){
-	int portCounter = 0, opt = 1;
+int listenOnPort(int INITPORT, int *listener){	//This attempts to listen on a port and stores the listener in the int listener variable
+	int portCounter = 0;
 	struct sockaddr_in servProps = getSockaddrFromPort(INITPORT + portCounter);
 	if(-1 == (*listener = socket(AF_INET, SOCK_STREAM, 0)))
 	{
@@ -579,8 +515,6 @@ int listenOnPort(int INITPORT, int *listener){
 		return -1;
 	}
 	printf("Created socket\n");
-	//setsockopt(*listener, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)); //Set the socket to be reusable immediatel when done with. May potentially lead to a client receiving the end of another client's session...
-	//SO_REUSEADDR is a pain to use, it's easier to keep the ports unbindable for a minute or two after completion.
 	for (portCounter = 1; -1 == bind(*listener, (struct sockaddr *)&servProps, sizeof(servProps)); portCounter++)
 	{
 		fprintf(stderr, "Bind failed on port %d\n", INITPORT + portCounter - 1);
@@ -590,67 +524,29 @@ int listenOnPort(int INITPORT, int *listener){
 
 	if(-1 == listen(*listener, 1)) //Listen for at most 1 connection
 	{
-		
-	/*	if(EADDRINUSE == errno){ //Handle this error more gracefully. It's caused by the setsockopt above allowing children to bind on the same socket, which they sometimes do.
-			do{
-				perror("Listening failed");
-				for (portCounter++; -1 == bind(*listener, (struct sockaddr *)&servProps, sizeof(servProps)) && portCounter < 100; portCounter++)
-				{
-					fprintf(stderr, "Bind failed on port %d\n", INITPORT + portCounter - 1);
-					servProps = getSockaddrFromPort(INITPORT + portCounter);
-				}
-			}while(-1 == listen(*listener, 1));
-		}
-		else{*/
-			perror("Listening failed");
-		//}
+		perror("Listening failed");
 		return -1;
 	}
 	printf("Now listening on socket\n");
-	return INITPORT + portCounter - 1;
+	return INITPORT + portCounter - 1;	//The actual port which is bound to is returned
 }
 
-char *stringToUpper(char *str, int n){ //Makes the first n chars of a string uppercase
-	const char *out = str;
-	while(*str != '\0'&& n > 0){
-		*str = toupper(*str);
-		str++;
-		n--;
-	}
-	return (char *)out;
-}
-
-char * stringToLower(char *str, int n){ //Makes the first n chars of a string lowercase
-	const char *out = str;
-	while(*str != '\0'&& n > 0){
-		*str = tolower(*str);
-		str++;
-		n--;
-	}
-	return (char *)out;
-}
-
-
-FILE *fileFromPort(int port, char *outName){
-	int offset = 0;
+FILE *fileFromPort(int port, char *outName){	//This makes a filename out of a port number and the epoch time
+	int offset = 0;								//outName is used to store the created filename. A FILE * to the actual file is returned
  	char filename[100] = {0};
-	offset += writeLongToString(filename, port, offset);
+	offset += longToString(filename, port, offset);
 	filename[offset] = '-';
 	offset++;
-	offset += writeLongToString(filename, (long)time(NULL), offset);
+	offset += longToString(filename, (long)time(NULL), offset);
 	strncpy(filename+offset, ".c\0", 3);	
 	offset += 3;
 	printf("Trying to create file with name %s\n", filename);
 	strncpy(outName, filename, offset);
 	return fopen(filename, "w+");
 }
-int writeLongToString(char *str, long l, int offset){
-	const int longSize = snprintf(NULL, 0, "%ld", l);
-	snprintf(str+offset, longSize+1, "%ld", l);
-	return (int)longSize;
-}
 
-void printMetadata(int fd, struct prog_stats *metadata){
+
+void printMetadata(int fd, struct prog_stats *metadata){ //This prints the metadata stored in the prog_stats struct
 	dprintf(fd, "*****************************************PROGRAM METADATA*****************************************\n");
 	dprintf(fd, "Program size: %d\nCompiler exit status: %d\nSource code name: %s\nExecutable name: %s\n",
 	metadata->size, metadata->compexitstatus, metadata->sourcename, metadata->execname);
